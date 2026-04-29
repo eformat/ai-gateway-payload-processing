@@ -1,0 +1,32 @@
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: {{ include "llm-katan.fullname" . }}
+  namespace: {{ .Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" . | nindent 4 }}
+spec:
+  hosts:
+  - {{ include "llm-katan.fullname" . }}.simulator
+  location: MESH_INTERNAL
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: DNS
+  endpoints:
+  - address: {{ include "llm-katan.fullname" . }}.{{ .Values.models.namespace }}.svc.cluster.local
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "llm-katan.fullname" . }}
+  namespace: {{ .Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" . | nindent 4 }}
+spec:
+  host: {{ include "llm-katan.fullname" . }}.simulator
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

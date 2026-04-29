@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-katan.fullname" . }}
+  namespace: {{ .Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.simulator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "llm-katan.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-katan.selectorLabels" . | nindent 8 }}
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: llm-katan
+        image: {{ .Values.simulator.image }}
+        env:
+        - name: HOME
+          value: /tmp
+        - name: PIP_CACHE_DIR
+          value: /tmp/.cache/pip
+        command:
+        - sh
+        - -c
+        - |
+          pip install --quiet --user llm-katan cryptography && \
+          export PATH="/tmp/.local/bin:$PATH" && \
+          llm-katan \
+            --model {{ .Values.simulator.model }} \
+            --backend {{ .Values.simulator.backend }} \
+            --port {{ .Values.simulator.port }} \
+            --providers {{ .Values.simulator.providers }} \
+            --tls-cert /tls/tls.crt \
+            --tls-key /tls/tls.key \
+            {{- if .Values.simulator.validateKeys }}
+            --validate-keys \
+            {{- end }}
+            --max-concurrent 10
+        ports:
+        - name: https
+          containerPort: {{ .Values.simulator.port }}
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.simulator.port }}
+            scheme: {{ if .Values.simulator.tls }}HTTPS{{ else }}HTTP{{ end }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.simulator.port }}
+            scheme: {{ if .Values.simulator.tls }}HTTPS{{ else }}HTTP{{ end }}
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        volumeMounts:
+        - name: serving-cert
+          mountPath: /tls
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: serving-cert
+        secret:
+          secretName: {{ include "llm-katan.fullname" . }}-serving-cert

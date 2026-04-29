@@ -1,0 +1,16 @@
+{{- range .Values.providers }}
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: {{ $.Release.Name }}-{{ .name }}
+  namespace: {{ $.Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" $ | nindent 4 }}
+spec:
+  provider: {{ .type }}
+  targetModel: {{ $.Release.Name }}-{{ .name }}
+  endpoint: {{ include "llm-katan.fullname" $ }}.{{ $.Values.models.namespace }}.svc.cluster.local
+  credentialRef:
+    name: {{ $.Release.Name }}-{{ .name }}
+{{- end }}

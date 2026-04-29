@@ -1,0 +1,35 @@
+{{- range .Values.providers }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $.Release.Name }}-{{ .name }}
+  namespace: {{ $.Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" $ | nindent 4 }}
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ $.Values.gateway.name }}
+    namespace: {{ $.Values.gateway.namespace }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /{{ $.Values.models.namespace }}/{{ $.Release.Name }}-{{ .name }}/
+    backendRefs:
+    - name: {{ $.Release.Name }}-{{ .name }}
+      port: 443
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: {{ $.Release.Name }}-{{ .name }}
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: {{ $.Release.Name }}-{{ .name }}
+      port: 443
+{{- end }}

@@ -1,0 +1,16 @@
+{{- range .Values.providers }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ .name }}
+  namespace: {{ $.Values.models.namespace }}
+  labels:
+    {{- include "llm-katan.labels" $ | nindent 4 }}
+spec:
+  type: ExternalName
+  externalName: {{ include "llm-katan.fullname" $ }}.simulator
+  ports:
+  - port: 443
+    protocol: TCP
+{{- end }}

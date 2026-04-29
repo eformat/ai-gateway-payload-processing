@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.models.namespace }}
+  labels:
+    istio-injection: enabled
+    {{- include "llm-katan.labels" . | nindent 4 }}

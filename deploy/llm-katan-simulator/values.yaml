@@ -1,0 +1,33 @@
+simulator:
+  image: python:3.12-slim
+  replicas: 1
+  port: 8443
+  backend: echo
+  model: test
+  tls: true
+  validateKeys: false
+  providers: openai,anthropic,vertexai,bedrock,azure_openai
+
+gateway:
+  name: maas-default-gateway
+  namespace: openshift-ingress
+
+models:
+  namespace: llm-katan
+
+providers:
+  - name: openai
+    type: openai
+    apiKey: llm-katan-openai-key
+  - name: anthropic
+    type: anthropic
+    apiKey: llm-katan-anthropic-key
+  - name: azure-openai
+    type: azure-openai
+    apiKey: llm-katan-azure-key
+  - name: bedrock
+    type: bedrock-openai
+    apiKey: llm-katan-openai-key
+  - name: vertex-openai
+    type: vertex-openai
+    apiKey: llm-katan-vertexai-key

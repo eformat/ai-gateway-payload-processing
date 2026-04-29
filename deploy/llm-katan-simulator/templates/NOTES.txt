@@ -1,0 +1,15 @@
+llm-katan simulator deployed to namespace: {{ .Values.models.namespace }}
+
+Models created:
+{{- range .Values.providers }}
+  - {{ $.Release.Name }}-{{ .name }} ({{ .type }})
+{{- end }}
+
+Test with:
+  export GW_HOST=$(oc get gateway {{ .Values.gateway.name }} -n {{ .Values.gateway.namespace }} -o jsonpath='{.spec.listeners[0].hostname}')
+{{- range .Values.providers }}
+  curl -sk "https://${GW_HOST}/{{ $.Values.models.namespace }}/{{ $.Release.Name }}-{{ .name }}/v1/chat/completions" \
+    -H "Authorization: Bearer test" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"{{ $.Release.Name }}-{{ .name }}","messages":[{"role":"user","content":"Hello"}]}'
+{{- end }}
