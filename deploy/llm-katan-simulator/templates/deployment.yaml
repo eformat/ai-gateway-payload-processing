@@ -36,14 +36,16 @@ spec:
             --backend {{ .Values.simulator.backend }} \
             --port {{ .Values.simulator.port }} \
             --providers {{ .Values.simulator.providers }} \
+            {{- if .Values.simulator.tls }}
             --tls-cert /tls/tls.crt \
             --tls-key /tls/tls.key \
+            {{- end }}
             {{- if .Values.simulator.validateKeys }}
             --validate-keys \
             {{- end }}
             --max-concurrent 10
         ports:
-        - name: https
+        - name: {{ if .Values.simulator.tls }}https{{ else }}http{{ end }}
           containerPort: {{ .Values.simulator.port }}
           protocol: TCP
         readinessProbe:
@@ -60,10 +62,12 @@ spec:
             scheme: {{ if .Values.simulator.tls }}HTTPS{{ else }}HTTP{{ end }}
           initialDelaySeconds: 30
           periodSeconds: 30
+        {{- if .Values.simulator.tls }}
         volumeMounts:
         - name: serving-cert
           mountPath: /tls
           readOnly: true
+        {{- end }}
         resources:
           requests:
             cpu: 100m
@@ -71,7 +75,9 @@ spec:
           limits:
             cpu: 500m
             memory: 512Mi
+      {{- if .Values.simulator.tls }}
       volumes:
       - name: serving-cert
         secret:
           secretName: {{ include "llm-katan.fullname" . }}-serving-cert
+      {{- end }}

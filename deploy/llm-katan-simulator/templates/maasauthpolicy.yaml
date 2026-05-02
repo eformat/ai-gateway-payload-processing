@@ -1,0 +1,19 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: {{ .Release.Name }}-models-access
+  namespace: {{ .Values.subscription.namespace }}
+  labels:
+    {{- include "llm-katan.labels" . | nindent 4 }}
+spec:
+  modelRefs:
+    {{- range .Values.providers }}
+    - name: {{ $.Release.Name }}-{{ .name }}
+      namespace: {{ $.Values.models.namespace }}
+    {{- end }}
+  subjects:
+    groups:
+      {{- range .Values.subscription.groups }}
+      - name: {{ . }}
+      {{- end }}
+    users: []

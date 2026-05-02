@@ -15,6 +15,13 @@ gateway:
 models:
   namespace: llm-katan
 
+subscription:
+  namespace: models-as-a-service
+  tokenRateLimit: 50000
+  tokenRateWindow: 1m
+  groups:
+    - system:authenticated
+
 providers:
   - name: openai
     type: openai

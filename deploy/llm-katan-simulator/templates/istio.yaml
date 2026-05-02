@@ -1,3 +1,4 @@
+{{- if .Values.simulator.tls }}
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
 metadata:
@@ -30,3 +31,4 @@ spec:
     tls:
       mode: SIMPLE
       insecureSkipVerify: true
+{{- end }}

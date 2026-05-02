@@ -1,0 +1,22 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: {{ .Release.Name }}-models-subscription
+  namespace: {{ .Values.subscription.namespace }}
+  labels:
+    {{- include "llm-katan.labels" . | nindent 4 }}
+spec:
+  owner:
+    groups:
+      {{- range .Values.subscription.groups }}
+      - name: {{ . }}
+      {{- end }}
+    users: []
+  modelRefs:
+    {{- range .Values.providers }}
+    - name: {{ $.Release.Name }}-{{ .name }}
+      namespace: {{ $.Values.models.namespace }}
+      tokenRateLimits:
+        - limit: {{ $.Values.subscription.tokenRateLimit }}
+          window: {{ $.Values.subscription.tokenRateWindow }}
+    {{- end }}

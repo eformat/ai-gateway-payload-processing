@@ -3,15 +3,17 @@ kind: Service
 metadata:
   name: {{ include "llm-katan.fullname" . }}
   namespace: {{ .Values.models.namespace }}
+  {{- if .Values.simulator.tls }}
   annotations:
     service.beta.openshift.io/serving-cert-secret-name: {{ include "llm-katan.fullname" . }}-serving-cert
+  {{- end }}
   labels:
     {{- include "llm-katan.labels" . | nindent 4 }}
 spec:
   selector:
     {{- include "llm-katan.selectorLabels" . | nindent 4 }}
   ports:
-  - name: https
-    port: 443
+  - name: {{ if .Values.simulator.tls }}https{{ else }}http{{ end }}
+    port: {{ if .Values.simulator.tls }}443{{ else }}{{ .Values.simulator.port }}{{ end }}
     targetPort: {{ .Values.simulator.port }}
     protocol: TCP

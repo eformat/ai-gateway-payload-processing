@@ -7,6 +7,8 @@ metadata:
   namespace: {{ $.Values.models.namespace }}
   labels:
     {{- include "llm-katan.labels" $ | nindent 4 }}
+  annotations:
+    maas.opendatahub.io/tls: "false"
 spec:
   provider: {{ .type }}
   targetModel: {{ $.Release.Name }}-{{ .name }}
