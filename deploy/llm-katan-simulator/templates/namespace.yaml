@@ -3,5 +3,6 @@ kind: Namespace
 metadata:
   name: {{ .Values.models.namespace }}
   labels:
+    opendatahub.io/dashboard: "true"
     istio-injection: enabled
     {{- include "llm-katan.labels" . | nindent 4 }}
