@@ -89,12 +89,14 @@ func (p *NemoRequestGuardPlugin) WithName(name string) *NemoRequestGuardPlugin {
 
 // ProcessRequest calls NeMo Guardrails to evaluate input rails on the incoming request.
 // It extracts user-supplied text from either an OpenAI-style chat body (via "messages")
-// or an MCP JSON-RPC body (via "params.arguments"), POSTs to NeMo url, and returns an
-// errcommon.Error with Forbidden (403) if NeMo flags the content.
+// or an MCP JSON-RPC body (via "params.arguments"), POSTs to the configured NeMo
+// endpoint, and returns an errcommon.Error with Forbidden (403) if NeMo blocks the
+// content.
 //
-// NeMo always returns HTTP 200 for both allowed and blocked requests. The block/allow
-// decision is conveyed through the response body "status" field.
-// "success" means the request passed all rails; "blocked" means the request is blocked.
+// NeMo always returns HTTP 200 for both allowed and blocked requests. The decision is
+// conveyed through the response body "status" field: "passed" means the request passed
+// all rails, "modified" means content was redacted (currently passed through as-is),
+// and "blocked" means the request is blocked.
 func (p *NemoRequestGuardPlugin) ProcessRequest(ctx context.Context, _ *framework.CycleState, request *framework.InferenceRequest) error {
 	model, ok := request.Body["model"].(string)
 	if !ok {
@@ -133,12 +135,12 @@ func (p *NemoRequestGuardPlugin) ProcessRequest(ctx context.Context, _ *framewor
 // extractMessages returns user-supplied text as a message slice suitable for NeMo's
 // OpenAI-compatible chat endpoint. It supports two payload formats:
 //
-//  1. OpenAI chat: top-level "messages" array → forwards all non-system messages.
+//  1. OpenAI chat: top-level "messages" array → forwards all messages.
 //  2. MCP JSON-RPC: {"jsonrpc":"2.0","params":{"arguments":{…}}} → concatenates
 //     all string argument values into a single user message.
 //
 // Returns (nil, nil) when no content is found.
-func extractMessages(body map[string]any) ([]map[string]string, error) {
+func extractMessages(body map[string]any) ([]any, error) {
 	if raw, ok := body["messages"]; ok {
 		return extractOpenAIMessages(raw)
 	}
@@ -148,35 +150,23 @@ func extractMessages(body map[string]any) ([]map[string]string, error) {
 	return nil, nil // not an inference request (e.g. API key management, model listing)
 }
 
-// extractOpenAIMessages parses an OpenAI-style "messages" value. System messages are
-// filtered. TrustyAI does not support this role. All other roles are forwarded so NeMo can evaluate
-// the full conversation context.
-func extractOpenAIMessages(raw any) ([]map[string]string, error) {
+// extractOpenAIMessages parses an OpenAI-style "messages" value. All messages are forwarded
+// so NeMo can evaluate the full conversation context.
+func extractOpenAIMessages(raw any) ([]any, error) {
 	slice, ok := raw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("messages is not an array")
 	}
-	var messages []map[string]string
-
-	for _, m := range slice {
-		msg, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role == "system" {
-			continue
-		}
-		content, _ := msg["content"].(string)
-		messages = append(messages, map[string]string{"role": role, "content": content})
+	if len(slice) == 0 {
+		return nil, nil
 	}
-	return messages, nil
+	return slice, nil
 }
 
 // extractMCPArguments extracts text from an MCP JSON-RPC tools/call
 // payload. String values inside params.arguments are sorted by key and joined
 // into a single "user" message so NeMo can evaluate them with input rails.
-func extractMCPArguments(body map[string]any) ([]map[string]string, error) {
+func extractMCPArguments(body map[string]any) ([]any, error) {
 	params, ok := body["params"].(map[string]any)
 	if !ok {
 		return nil, nil
@@ -201,5 +191,5 @@ func extractMCPArguments(body map[string]any) ([]map[string]string, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
-	return []map[string]string{{"role": "user", "content": strings.Join(parts, "\n")}}, nil
+	return []any{map[string]string{"role": "user", "content": strings.Join(parts, "\n")}}, nil
 }

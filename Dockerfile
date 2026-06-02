@@ -21,6 +21,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Sources
+COPY api/ api/
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
@@ -29,8 +30,10 @@ RUN VERSION_PKG="$(go list -f '{{.ImportPath}}' sigs.k8s.io/gateway-api-inferenc
 	CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=strictfipsruntime GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 	go build -a -trimpath -ldflags="-s -w -X ${VERSION_PKG}.CommitSHA=${COMMIT_SHA} -X ${VERSION_PKG}.BuildRef=${BUILD_REF}" -o /bbr ./cmd
 
+USER 1001
+
 # Multistage deploy
-FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal:9.8@sha256:5b74fce9d6e629942a0c6dc0f546c193e70d7f974d999a48c948c53dd3d36362
 
 WORKDIR /
 COPY --from=builder /bbr /bbr

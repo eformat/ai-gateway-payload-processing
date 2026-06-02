@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 )
 
 // externalModelGVK is the GroupVersionKind for ExternalModel CRD.
@@ -39,14 +40,14 @@ var externalModelGVK = schema.GroupVersionKind{
 // and updates the model store with provider and credential information.
 type externalModelReconciler struct {
 	client.Reader
-	store *modelInfoStore
+	store *infoStore
 }
 
 // Reconcile handles create/update/delete events for ExternalModel resources.
 // The ExternalModel CR name is used as the model key in the store, matching
 // the model name in inference request bodies.
 func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	logger := log.FromContext(ctx).V(logutil.DEFAULT)
 	logger.Info("reconciling ExternalModel", "name", req.Name, "namespace", req.Namespace)
 
 	obj := &unstructured.Unstructured{}
@@ -58,7 +59,8 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if errors.IsNotFound(err) || !obj.GetDeletionTimestamp().IsZero() {
-		r.store.deleteExternalModel(req.NamespacedName)
+		r.store.deleteModel(req.NamespacedName)
+		logger.Info("ExternalModel removed from store", "name", req.Name, "namespace", req.Namespace)
 		return ctrl.Result{}, nil
 	}
 
@@ -73,7 +75,7 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		secretName:      credsName,
 		secretNamespace: req.Namespace, // secret namespace is always the namespace of the ExternalModel
 	}
-	r.store.addOrUpdateExternalModel(req.NamespacedName, info)
+	r.store.addOrUpdateModel(req.NamespacedName, info)
 
 	logger.Info("updated model store", "provider", provider, "targetModel", targetModel)
 	return ctrl.Result{}, nil

@@ -86,13 +86,14 @@ func (p *NemoResponseGuardPlugin) WithName(name string) *NemoResponseGuardPlugin
 }
 
 // ProcessResponse calls NeMo Guardrails to evaluate output rails on the model response.
-// It extracts assistant messages from the OpenAI-style response body, POSTs them to
-// NeMo's /v1/guardrail/checks endpoint, and returns an errcommon.Error with Forbidden (403)
-// if NeMo flags the content.
+// It extracts assistant messages from the OpenAI-style response body, POSTs them to the
+// configured NeMo endpoint, and returns an errcommon.Error with Forbidden (403) if NeMo
+// blocks the content.
 //
-// NeMo always returns HTTP 200 for both allowed and blocked responses. The block/allow
-// decision is conveyed through the response body "status" field.
-// "success" means the response passed all rails; "blocked" means it is blocked.
+// NeMo always returns HTTP 200 for both allowed and blocked responses. The decision is
+// conveyed through the response body "status" field: "passed" means the response passed
+// all rails, "modified" means content was redacted (currently passed through as-is),
+// and "blocked" means the response is blocked.
 func (p *NemoResponseGuardPlugin) ProcessResponse(ctx context.Context, _ *framework.CycleState, response *framework.InferenceResponse) error {
 	messages, err := extractAssistantMessages(response.Body)
 	if err != nil {
@@ -123,14 +124,24 @@ func (p *NemoResponseGuardPlugin) ProcessResponse(ctx context.Context, _ *framew
 	return nil
 }
 
-// extractAssistantMessages pulls assistant content from every choice in an OpenAI-style
-// chat completion response. Returns an error if choices exists but has an unsupported
-// shape (fail closed), and nil when no choices are present.
+// extractAssistantMessages extracts assistant content from a response body.
+// It supports two payload formats:
+// 1. OpenAI chat (via "choices"): choices (fail closed), and nil when no content is found.
+// 2. MCP JSON-RPC: {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"Hello"}]}}
+//
+// Returns (nil, nil) when no content is found.
 func extractAssistantMessages(body map[string]any) ([]map[string]string, error) {
-	raw, ok := body["choices"]
-	if !ok {
-		return nil, nil
+	if raw, ok := body["choices"]; ok {
+		return extractOpenAIAssistantMessagesFromChoices(raw)
 	}
+	if _, ok := body["jsonrpc"]; ok {
+		return extractMCPTextContent(body)
+	}
+	return nil, nil
+}
+
+// extractOpenAIAssistantMessagesFromChoices parses OpenAI-style choices into assistant messages.
+func extractOpenAIAssistantMessagesFromChoices(raw any) ([]map[string]string, error) {
 	choiceSlice, ok := raw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("choices field has unsupported type")
@@ -164,6 +175,27 @@ func extractAssistantMessages(body map[string]any) ([]map[string]string, error) 
 			continue
 		}
 		messages = append(messages, map[string]string{"role": "assistant", "content": content})
+	}
+	return messages, nil
+}
+
+// extractMCPTextContent parses MCP text content into assistant messages.
+func extractMCPTextContent(body map[string]any) ([]map[string]string, error) {
+	result, _ := body["result"].(map[string]any)
+	contentSlice, _ := result["content"].([]any)
+	var messages []map[string]string
+	for _, item := range contentSlice {
+		entry, _ := item.(map[string]any)
+		if entry["type"] != "text" {
+			continue
+		}
+		text, ok := entry["text"].(string)
+		if !ok {
+			return nil, fmt.Errorf("mcp text content is not a string")
+		}
+		if text != "" {
+			messages = append(messages, map[string]string{"role": "assistant", "content": text})
+		}
 	}
 	return messages, nil
 }

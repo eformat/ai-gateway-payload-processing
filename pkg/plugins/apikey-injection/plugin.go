@@ -45,7 +45,7 @@ var _ framework.RequestProcessor = &ApiKeyInjectionPlugin{}
 
 // APIKeyInjectionFactory defines the factory function for ApiKeyInjectionPlugin.
 func APIKeyInjectionFactory(name string, _ json.RawMessage, handle framework.Handle) (framework.BBRPlugin, error) {
-	plugin, err := NewAPIKeyInjectionPlugin(handle.ReconcilerBuilder, handle.ClientReader())
+	plugin, err := NewAPIKeyInjectionPlugin(handle.ReconcilerBuilder, handle.Client())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create plugin '%s' - %w", APIKeyInjectionPluginType, err)
 	}
@@ -71,9 +71,9 @@ func NewAPIKeyInjectionPlugin(reconcilerBuilder func() *builder.Builder, clientR
 			Name: APIKeyInjectionPluginType,
 		},
 		authHeadersGenerators: map[string]auth.AuthHeadersGenerator{
-			provider.OpenAI:        &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
-			provider.Anthropic:     &auth.SimpleAuthGenerator{HeaderName: "x-api-key"},
-			provider.AzureOpenAI:   &auth.SimpleAuthGenerator{HeaderName: "api-key"},
+			provider.OpenAI:      &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
+			provider.Anthropic:   &auth.SimpleAuthGenerator{HeaderName: "x-api-key"},
+			provider.AzureOpenAI: &auth.SimpleAuthGenerator{HeaderName: "api-key"},
 			// provider.Vertex uses the native GenerateContent API — not used in 3.4 ExternalModel flow.
 			// provider.Vertex:     &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
 			provider.VertexOpenAI:  &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
@@ -106,6 +106,8 @@ func (p *ApiKeyInjectionPlugin) WithName(name string) *ApiKeyInjectionPlugin {
 // ProcessRequest reads the credential Secret reference and provider from CycleState (written by model-provider-resolver),
 // looks up the API key in the store, and injects provider-specific auth headers into the request.
 func (p *ApiKeyInjectionPlugin) ProcessRequest(ctx context.Context, cycleState *framework.CycleState, request *framework.InferenceRequest) error {
+	logger := log.FromContext(ctx).V(logutil.DEFAULT)
+
 	// Check if this is an external model (provider set by model-provider-resolver).
 	// Internal models have no provider in CycleState and don't need API key injection.
 	providerName, err := framework.ReadCycleStateKey[string](cycleState, state.ProviderKey)
@@ -115,26 +117,30 @@ func (p *ApiKeyInjectionPlugin) ProcessRequest(ctx context.Context, cycleState *
 
 	credsName, err := framework.ReadCycleStateKey[string](cycleState, state.CredsRefName)
 	if err != nil || credsName == "" {
+		logger.Error(err, "credentialRef name missing", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("provider '%s' is missing credentialRef", providerName)}
 	}
 	credsNamespace, err := framework.ReadCycleStateKey[string](cycleState, state.CredsRefNamespace)
 	if err != nil || credsNamespace == "" {
+		logger.Error(err, "credentialRef namespace missing", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("provider '%s' is missing credentialRef namespace", providerName)}
 	}
 
-	secretKey := fmt.Sprintf("%s/%s", credsNamespace, credsName)
-	credentials, found := p.store.get(secretKey)
+	credentials, found := p.store.get(credsNamespace, credsName)
 	if !found {
+		logger.Error(nil, "credentials not found in store", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("provider '%s' credentials not found", providerName)}
 	}
 
 	generator, ok := p.authHeadersGenerators[providerName]
 	if !ok {
+		logger.Error(nil, "unsupported provider for auth generation", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("unsupported provider - '%s'", providerName)}
 	}
 
 	authHeaders, err := generator.GenerateAuthHeaders(credentials)
 	if err != nil {
+		logger.Error(err, "auth header generation failed", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("failed to generate auth headers for provider '%s': %v", providerName, err)}
 	}
 
@@ -142,6 +148,6 @@ func (p *ApiKeyInjectionPlugin) ProcessRequest(ctx context.Context, cycleState *
 		request.SetHeader(headerKey, headerValue)
 	}
 
-	log.FromContext(ctx).V(logutil.VERBOSE).Info("auth headers injected", "provider", providerName)
+	logger.Info("auth headers injected", "provider", providerName)
 	return nil
 }

@@ -9,7 +9,7 @@ on:
       - main
 
 env:
-  E2E_SIMULATOR_ENDPOINT: "3.13.21.181"
+  E2E_SIMULATOR_ENDPOINT: "3.147.232.199"
 
 jobs:
   check-changes:
@@ -22,7 +22,7 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           filters: |
@@ -67,7 +67,7 @@ jobs:
       checks: write
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
         with:
           tool-cache: false
 
@@ -136,7 +136,7 @@ jobs:
 
       - name: Publish E2E test results
         if: always()
-        uses: mikepenz/action-junit-report@v6
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6
         with:
           report_paths: "**/results_e2e_xunit.xml"
           check_name: E2E Test Results

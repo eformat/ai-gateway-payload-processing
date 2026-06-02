@@ -107,12 +107,12 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 		wantErrCode     string
 	}{
 		{
-			name: "allow: NeMo returns status success",
+			name: "allow: NeMo returns status passed",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewEncoder(w).Encode(map[string]any{
-					"status": "success",
+					"status": "passed",
 					"rails_status": map[string]any{
-						"output-rail": map[string]any{"status": "success"},
+						"output-rail": map[string]any{"status": "passed"},
 					},
 				}); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -120,6 +120,33 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			},
 			body:    validResponseBody("The weather is sunny today."),
 			wantErr: false,
+		},
+		{
+			name: "allow: NeMo returns status modified — passed through (redaction not yet applied)",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"status": "modified",
+					"rails_status": map[string]any{
+						"mask sensitive data on output": map[string]any{"status": "modified"},
+					},
+				}); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:    validResponseBody("The user's email is test@example.com"),
+			wantErr: false,
+		},
+		{
+			name: "fail-closed: unknown status — status success is no longer recognized",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewEncoder(w).Encode(map[string]any{"status": "success"}); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:            validResponseBody("Hello"),
+			wantErr:         true,
+			wantErrContains: "unknown NeMo guardrails status",
+			wantErrCode:     errcommon.Internal,
 		},
 		{
 			name: "block: NeMo returns status blocked with per-rail detail",
@@ -139,7 +166,7 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			wantErrCode:     errcommon.Forbidden,
 		},
 		{
-			name: "block: NeMo returns empty body (fail closed)",
+			name: "fail-closed: NeMo returns empty body (no status)",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewEncoder(w).Encode(map[string]any{}); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -147,8 +174,8 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			},
 			body:            validResponseBody("Some content"),
 			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
+			wantErrContains: "unknown NeMo guardrails status",
+			wantErrCode:     errcommon.Internal,
 		},
 		{
 			name: "block: NeMo returns status blocked without rails_status",
@@ -163,7 +190,7 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			wantErrCode:     errcommon.Forbidden,
 		},
 		{
-			name: "block: NeMo returns refusal-style text only (no status — fail closed)",
+			name: "fail-closed: NeMo returns refusal-style text only (no status)",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewEncoder(w).Encode(map[string]any{
 					"extra": "I'm sorry, I can't respond to that.",
@@ -173,8 +200,8 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			},
 			body:            validResponseBody("Some toxic output"),
 			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
+			wantErrContains: "unknown NeMo guardrails status",
+			wantErrCode:     errcommon.Internal,
 		},
 		{
 			name: "error: NeMo returns HTTP 500",
@@ -494,6 +521,38 @@ func TestExtractAssistantMessages(t *testing.T) {
 		{
 			name:    "choices is not an array — fail closed",
 			body:    map[string]any{"choices": "not-an-array"},
+			wantErr: true,
+		},
+		{
+			name: "mcp text content",
+			body: map[string]any{
+				"jsonrpc": "2.0",
+				"result":  map[string]any{"content": []any{map[string]any{"type": "text", "text": "Hello"}}},
+			},
+			want: []map[string]string{{"role": "assistant", "content": "Hello"}},
+		},
+		{
+			name: "mcp text content — empty content array — nil",
+			body: map[string]any{
+				"jsonrpc": "2.0",
+				"result":  map[string]any{"content": []any{}},
+			},
+			want: nil,
+		},
+		{
+			name: "mcp text content — empty content entry — nil",
+			body: map[string]any{
+				"jsonrpc": "2.0",
+				"result":  map[string]any{"content": []any{map[string]any{"type": "text", "text": ""}}},
+			},
+			want: nil,
+		},
+		{
+			name: "mcp text content — text is not a string — fail closed",
+			body: map[string]any{
+				"jsonrpc": "2.0",
+				"result":  map[string]any{"content": []any{map[string]any{"type": "text", "text": 42}}},
+			},
 			wantErr: true,
 		},
 	}

@@ -1,4 +1,4 @@
-# Dockerfile.konflux.e2e builds a container image for running E2E tests.
+# Dockerfile.e2e builds a container image for running E2E tests.
 # Used by the RHOAI shift-left Jenkins pipeline via `podman run`.
 #
 # Usage:
@@ -10,11 +10,13 @@
 #     quay.io/opendatahub/ai-gateway-payload-processing-e2e:latest
 
 ARG GOLANG_VERSION=1.25
-ARG KUBECTL_VERSION=v1.31.0
 
 ## Stage 1: Build the test binary and download kubectl
 FROM registry.access.redhat.com/ubi9/go-toolset:$GOLANG_VERSION AS builder
-ARG KUBECTL_VERSION
+ARG OCP_VERSION=4.21.15
+ARG CGO_ENABLED=1
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 
 USER root
 
@@ -26,17 +28,19 @@ COPY cmd/ cmd/
 COPY pkg/ pkg/
 COPY test/ test/
 
-# Compile the Ginkgo test binary (static, no CGO).
-RUN CGO_ENABLED=0 go test -c -o /e2e-tests.test ./test/e2e/ \
+# Compile the Ginkgo test binary with CGO and strict FIPS runtime (matches Dockerfile pattern).
+RUN CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=strictfipsruntime GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go test -c -o /e2e-tests.test ./test/e2e/ \
     -ldflags="-s -w"
 
-# Download kubectl in the builder stage (has curl and network access).
-RUN curl -sLo /usr/local/bin/kubectl \
-      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
+# Download FIPS-compliant kubectl from the OpenShift client tarball (rhel9, CGO+OpenSSL).
+RUN curl -sL "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/${OCP_VERSION}/openshift-client-linux-${TARGETARCH}-rhel9-${OCP_VERSION}.tar.gz" | \
+    tar -xz -C /tmp/ oc kubectl && \
+    mv /tmp/kubectl /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl
 
 ## Stage 2: Runtime
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8@sha256:5b74fce9d6e629942a0c6dc0f546c193e70d7f974d999a48c948c53dd3d36362
 
 WORKDIR /e2e
 

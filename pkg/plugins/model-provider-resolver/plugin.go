@@ -44,7 +44,7 @@ var _ framework.RequestProcessor = &ModelProviderResolverPlugin{}
 
 // ModelProviderResolverFactory defines the factory function for ModelProviderResolverPlugin
 func ModelProviderResolverFactory(name string, _ json.RawMessage, handle framework.Handle) (framework.BBRPlugin, error) {
-	plugin, err := NewModelProviderResolver(handle.ReconcilerBuilder, handle.ClientReader())
+	plugin, err := NewModelProviderResolver(handle.ReconcilerBuilder, handle.Client())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create plugin '%s' - %w", ModelProviderResolverPluginType, err)
 	}
@@ -53,10 +53,10 @@ func ModelProviderResolverFactory(name string, _ json.RawMessage, handle framewo
 }
 
 func NewModelProviderResolver(reconcilerBuilder func() *builder.Builder, clientReader client.Reader) (*ModelProviderResolverPlugin, error) {
-	modelInfoStore := newModelInfoStore()
+	store := newInfoStore()
 	reconciler := &externalModelReconciler{
 		Reader: clientReader,
-		store:  modelInfoStore,
+		store:  store,
 	}
 
 	// Watch ExternalModel CRDs directly (no MaaS dependency)
@@ -69,7 +69,7 @@ func NewModelProviderResolver(reconcilerBuilder func() *builder.Builder, clientR
 
 	return &ModelProviderResolverPlugin{
 		typedName:      plugin.TypedName{Type: ModelProviderResolverPluginType, Name: ModelProviderResolverPluginType},
-		modelInfoStore: modelInfoStore,
+		store: store,
 	}, nil
 }
 
@@ -78,7 +78,7 @@ func NewModelProviderResolver(reconcilerBuilder func() *builder.Builder, clientR
 // (api-translation, api-key-injection).
 type ModelProviderResolverPlugin struct {
 	typedName      plugin.TypedName
-	modelInfoStore *modelInfoStore
+	store *infoStore
 }
 
 // TypedName returns the type and name tuple of this plugin instance.
@@ -96,6 +96,8 @@ func (p *ModelProviderResolverPlugin) WithName(name string) *ModelProviderResolv
 // from the modelInfoStore (populated by ExternalModel reconciler), and writes model, provider
 // and credential reference info to CycleState.
 func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleState *framework.CycleState, request *framework.InferenceRequest) error {
+	logger := log.FromContext(ctx).V(logutil.DEFAULT)
+
 	model, ok := request.Body["model"].(string)
 	if !ok || model == "" {
 		return nil // not an inference request (e.g. API key management, model listing)
@@ -113,18 +115,19 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 	modelKey := types.NamespacedName{Namespace: segments[0], Name: segments[1]}
 	log.FromContext(ctx).V(logutil.VERBOSE).Info("exported namespaced name from path", "key", modelKey)
 
-	externalModelInfo, found := p.modelInfoStore.getModelInfo(modelKey)
+	externalModelInfo, found := p.store.getModel(modelKey)
 	if !found { // info is stored only for external models
 		return nil // this is not considered an error, we just need to skip if it's internal model
 	}
 
 	if !strings.HasSuffix(relativePath, "chat/completions") { // no support for other input types
+		logger.Error(nil, "unsupported route for external model", "model", modelKey.String(), "path", relativePath)
 		return errcommon.Error{Code: errcommon.BadRequest, Msg: "only /chat/completions input type is supported"}
-
 	}
 
 	// if there's a mismatch it's an error, we don't want to proceed
 	if externalModelInfo.targetModel != model {
+		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", externalModelInfo.targetModel)
 		return errcommon.Error{Code: errcommon.NotFound, Msg: fmt.Sprintf("model in request body '%s' doesn't match ExternalModel", model)}
 	}
 
@@ -134,6 +137,7 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 	cycleState.Write(state.CredsRefName, externalModelInfo.secretName)
 	cycleState.Write(state.CredsRefNamespace, externalModelInfo.secretNamespace)
 
+	logger.Info("external model resolved", "model", modelKey.String(), "provider", externalModelInfo.provider)
 	return nil
 }
 
