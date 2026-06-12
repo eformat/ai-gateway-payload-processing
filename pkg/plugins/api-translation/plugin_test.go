@@ -374,3 +374,75 @@ func TestFactory_Success(t *testing.T) {
 	assert.Equal(t, "test-instance", p.TypedName().Name)
 	assert.Equal(t, APITranslationPluginType, p.TypedName().Type)
 }
+
+func TestIsPassthrough(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		output   string
+		expected bool
+	}{
+		{"anthropic messages match → passthrough", "messages", "messages", true},
+		{"openai-responses match → passthrough", "openai-responses", "openai-responses", true},
+		{"format mismatch → translate", "openai-chat", "messages", false},
+		{"openai-chat excluded even when matching → translate", "openai-chat", "openai-chat", false},
+		{"empty input → translate", "", "messages", false},
+		{"empty output → translate", "messages", "", false},
+		{"both empty → translate", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs := framework.NewCycleState()
+			if tt.input != "" {
+				cs.Write(state.InputAPIFormatKey, tt.input)
+			}
+			if tt.output != "" {
+				cs.Write(state.APIFormatKey, tt.output)
+			}
+			assert.Equal(t, tt.expected, isPassthrough(cs))
+		})
+	}
+}
+
+func TestPassthrough_SkipsRequestTranslation(t *testing.T) {
+	p, _ := NewAPITranslationPlugin(context.Background(), apiTranslationConfig{})
+	cs := framework.NewCycleState()
+	cs.Write(state.ProviderKey, "anthropic")
+	cs.Write(state.InputAPIFormatKey, "messages")
+	cs.Write(state.APIFormatKey, "messages")
+
+	req := framework.NewInferenceRequest()
+	req.Body["model"] = "claude-opus-4-6"
+	req.Body["messages"] = []any{map[string]any{"role": "user", "content": "hi"}}
+	req.Headers["authorization"] = "Bearer sk-test"
+
+	err := p.ProcessRequest(context.Background(), cs, req)
+	require.NoError(t, err)
+
+	// Authorization should be removed even in passthrough
+	_, hasAuth := req.Headers["authorization"]
+	assert.False(t, hasAuth)
+
+	// Body should NOT be translated (still Anthropic format, not OpenAI)
+	_, hasMessages := req.Body["messages"]
+	assert.True(t, hasMessages)
+}
+
+func TestPassthrough_SkipsResponseTranslation(t *testing.T) {
+	p, _ := NewAPITranslationPlugin(context.Background(), apiTranslationConfig{})
+	cs := framework.NewCycleState()
+	cs.Write(state.ProviderKey, "anthropic")
+	cs.Write(state.InputAPIFormatKey, "messages")
+	cs.Write(state.APIFormatKey, "messages")
+
+	resp := framework.NewInferenceResponse()
+	resp.Body["type"] = "message"
+	resp.Body["content"] = []any{map[string]any{"type": "text", "text": "hello"}}
+
+	err := p.ProcessResponse(context.Background(), cs, resp)
+	require.NoError(t, err)
+
+	// Body should NOT be translated (still Anthropic format, not converted to OpenAI)
+	assert.Equal(t, "message", resp.Body["type"])
+}

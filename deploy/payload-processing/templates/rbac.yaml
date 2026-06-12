@@ -11,10 +11,29 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
-  # model-provider-resolver plugin: watches ExternalModel CRD
+  # model-provider-resolver plugin: watches ExternalModel and ExternalProvider CRDs
   - apiGroups: ["maas.opendatahub.io"]
     resources: ["externalmodels"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders", "externalmodels"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders/status", "externalmodels/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders/finalizers", "externalmodels/finalizers"]
+    verbs: ["update"]
+  # controller reconcilers: create networking resources
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["serviceentries", "destinationrules"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -40,10 +59,29 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
-  # model-provider-resolver plugin: watches ExternalModel CRD
+  # model-provider-resolver plugin: watches ExternalModel and ExternalProvider CRDs
   - apiGroups: ["maas.opendatahub.io"]
     resources: ["externalmodels"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders", "externalmodels"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders/status", "externalmodels/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["inference.opendatahub.io"]
+    resources: ["externalproviders/finalizers", "externalmodels/finalizers"]
+    verbs: ["update"]
+  # controller reconcilers: create networking resources
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["serviceentries", "destinationrules"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

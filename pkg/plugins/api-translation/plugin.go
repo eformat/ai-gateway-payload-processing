@@ -135,11 +135,20 @@ func (p *APITranslationPlugin) WithName(name string) *APITranslationPlugin {
 
 // ProcessRequest reads the provider from CycleState (set by an upstream plugin) and translates
 // the request body from OpenAI format to the provider's native format if needed.
+// When the incoming client format matches the upstream API format (passthrough mode),
+// translation is skipped entirely.
 func (p *APITranslationPlugin) ProcessRequest(ctx context.Context, cycleState *framework.CycleState, request *framework.InferenceRequest) error {
 	logger := log.FromContext(ctx).V(logutil.DEFAULT)
 
 	providerName, err := framework.ReadCycleStateKey[string](cycleState, state.ProviderKey) // err if not found
 	if err != nil || providerName == "" {                                                   // empty provider means no translation needed
+		return nil
+	}
+
+	if isPassthrough(cycleState) {
+		logger.Info("passthrough mode — skipping request translation")
+		// Remove client auth header; apikey-injection plugin adds the provider credential downstream.
+		request.RemoveHeader("authorization")
 		return nil
 	}
 
@@ -182,11 +191,17 @@ func (p *APITranslationPlugin) ProcessRequest(ctx context.Context, cycleState *f
 
 // ProcessResponse reads the provider from CycleState and translates the response
 // back to OpenAI Chat Completions format if needed.
+// When in passthrough mode, translation is skipped.
 func (p *APITranslationPlugin) ProcessResponse(ctx context.Context, cycleState *framework.CycleState, response *framework.InferenceResponse) error {
 	logger := log.FromContext(ctx).V(logutil.DEFAULT)
 
 	providerName, err := framework.ReadCycleStateKey[string](cycleState, state.ProviderKey) // err if not found
 	if err != nil || providerName == "" {                                                   // empty provider means no translation needed
+		return nil
+	}
+
+	if isPassthrough(cycleState) {
+		logger.Info("passthrough mode — skipping response translation")
 		return nil
 	}
 
@@ -214,4 +229,29 @@ func (p *APITranslationPlugin) ProcessResponse(ctx context.Context, cycleState *
 
 	logger.Info("response api-translation completed successfully", "provider", providerName)
 	return nil
+}
+
+// isPassthrough checks whether the request should bypass translation.
+// Passthrough activates when:
+//  1. Both input and output API format keys are set in CycleState
+//  2. They match (client speaks the same format as the upstream provider)
+//  3. The format is NOT "openai-chat" — the OpenAI translator performs essential
+//     :path rewriting (strips model prefix path) that is needed even when both
+//     sides speak OpenAI format. Without this rewrite, the upstream provider would
+//     receive the full MaaS-prefixed path (e.g., /llm/model/v1/chat/completions).
+//
+// This design is intentionally generic: adding support for new API formats
+// (embeddings, audio, images) requires only adding a path mapping in
+// detectInputAPIFormat — no changes needed here.
+func isPassthrough(cycleState *framework.CycleState) bool {
+	inputFormat, _ := framework.ReadCycleStateKey[string](cycleState, state.InputAPIFormatKey)
+	outputFormat, _ := framework.ReadCycleStateKey[string](cycleState, state.APIFormatKey)
+	if inputFormat == "" || outputFormat == "" {
+		return false
+	}
+	if inputFormat != outputFormat {
+		return false
+	}
+	// OpenAI chat is excluded because the translator rewrites :path to strip the model prefix.
+	return inputFormat != "openai-chat"
 }

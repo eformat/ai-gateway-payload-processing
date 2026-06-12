@@ -60,7 +60,9 @@ type ExternalProviderRef struct {
 	TargetModel string `json:"targetModel"`
 
 	// APIFormat determines how requests/responses are translated for this provider.
-	// e.g. "openai", "anthropic", "bedrock-openai", "azure-openai", "vertex-openai".
+	// Supported values:
+	//   - "openai-chat": OpenAI Chat Completions API (/v1/chat/completions)
+	//   - "messages": Anthropic Messages API (/v1/messages)
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
@@ -75,6 +77,15 @@ type ExternalProviderRef struct {
 	// If not set, the ExternalProvider auth is used.
 	// +optional
 	Auth *AuthConfig `json:"auth,omitempty"`
+
+	// Weight determines the relative traffic proportion for this provider binding.
+	// Higher weight means more traffic. Used for weighted random selection across
+	// multiple provider refs. Defaults to 1 if not set.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=1
+	Weight *int `json:"weight,omitempty"`
 }
 
 // ExternalModelStatus defines the observed state of ExternalModel.
