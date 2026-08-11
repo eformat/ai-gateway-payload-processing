@@ -1,5 +1,5 @@
-upstreamBbr:
-  bbr:
+upstreamIpp:
+  payloadProcessor:
     name: payload-processing
     replicas: 1
     image:
@@ -10,31 +10,35 @@ upstreamBbr:
     port: 9004
     healthCheckPort: 9005
     multiNamespace: true
-
     flags:
-      # Log verbosity
       v: 3
-
-    # BBR plugins configuration.
-    # Format: type (registered plugin type), name (instance name), json (optional config object)
-    plugins:
+    customConfig:
+      plugins:
+      - type: maas-headers-guard
       - type: body-field-to-header
         name: model-extractor
-        json:
+        parameters:
           fieldName: model
           headerName: X-Gateway-Model-Name
       - type: model-provider-resolver
-        name: model-provider-resolver
+      - type: stream-usage-enforcer
       - type: api-translation
-        name: api-translation
       - type: apikey-injection
-        name: apikey-injection
+      profiles:
+      - name: default
+        plugins:
+          request:
+          - pluginRef: maas-headers-guard
+          - pluginRef: model-extractor
+          - pluginRef: model-provider-resolver
+          - pluginRef: stream-usage-enforcer
+          - pluginRef: api-translation
+          - pluginRef: apikey-injection
+          response:
+          - pluginRef: api-translation
 
   provider:
     name: istio
-    istio:
-      envoyFilter:
-        operation: INSERT_AFTER
 
   inferenceGateway:
     name: maas-default-gateway

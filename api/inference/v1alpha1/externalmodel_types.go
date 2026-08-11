@@ -25,8 +25,9 @@ import (
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ExternalModel defines a client-facing model name that maps to one or more
-// external providers. metadata.name is the model name clients use in requests.
+// ExternalModel defines a client-facing model that maps to one or more
+// external providers. The model name clients use in requests is determined
+// by spec.modelName (if set) or metadata.name (default).
 type ExternalModel struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -37,6 +38,15 @@ type ExternalModel struct {
 
 // ExternalModelSpec defines the desired state of ExternalModel.
 type ExternalModelSpec struct {
+	// ModelName is the client-facing model name used in inference request bodies.
+	// Clients send this value in the "model" field of chat completion requests.
+	// Defaults to metadata.name if not set. Use this field when the desired
+	// model name contains characters not allowed in Kubernetes resource names
+	// (dots, colons, slashes, uppercase).
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ModelName string `json:"modelName,omitempty"`
+
 	// ExternalProviderRefs maps this model to one or more external providers.
 	// Each entry specifies the provider specific details.
 	//
@@ -68,6 +78,16 @@ type ExternalProviderRef struct {
 	// +kubebuilder:validation:MaxLength=63
 	APIFormat string `json:"apiFormat"`
 
+	// Path sets the outgoing request `:path` pseudo-header for this model-provider binding.
+	// Must be a valid absolute path (e.g. "/v1/chat/completions" or
+	// "/maas-default-gateway/v1/chat/completions").
+	// Supports {key} placeholders resolved from the merged Config map.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^/.*`
+	Path string `json:"path"`
+
 	// Config holds model-specific configuration as key-value pairs.
 	// Overrides the ExternalProvider config for this model-provider binding.
 	// +optional
@@ -80,9 +100,10 @@ type ExternalProviderRef struct {
 
 	// Weight determines the relative traffic proportion for this provider binding.
 	// Higher weight means more traffic. Used for weighted random selection across
-	// multiple provider refs. Defaults to 1 if not set.
+	// multiple provider refs. A weight of 0 disables the ref (no traffic routed
+	// to it). Defaults to 1 if not set.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	// +kubebuilder:default=1
 	Weight *int `json:"weight,omitempty"`
@@ -97,6 +118,12 @@ type ExternalModelStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Ready;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
+
+	// HTTPRouteName is the name of the HTTPRoute created by the controller
+	// for this ExternalModel. Consumers (e.g., maas-controller) can read this
+	// to attach policies without assuming naming conventions.
+	// +optional
+	HTTPRouteName string `json:"httpRouteName,omitempty"`
 
 	// Conditions represent the latest available observations of the model's state.
 	// +optional

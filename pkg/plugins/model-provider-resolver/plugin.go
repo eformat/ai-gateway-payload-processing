@@ -23,7 +23,6 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -31,24 +30,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/framework"
-	errcommon "sigs.k8s.io/gateway-api-inference-extension/pkg/common/error"
-	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
-	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
+	errcommon "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/error"
+	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-payload-processing/api/inference/v1alpha1"
-	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/controller/legacymigration"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/state"
 )
 
 const (
 	ModelProviderResolverPluginType = "model-provider-resolver"
+
+	// SelectedProviderHeader is set by the plugin on each request to drive
+	// Envoy routing. The HTTPRoute reconciler creates per-provider route rules
+	// that match on this header, ensuring the destination and credential are
+	// always consistent.
+	SelectedProviderHeader = "x-ipp-selected-provider"
 )
 
-var _ framework.RequestProcessor = &ModelProviderResolverPlugin{}
+var _ requesthandling.RequestProcessor = &ModelProviderResolverPlugin{}
 
 // ModelProviderResolverFactory defines the factory function for ModelProviderResolverPlugin.
-func ModelProviderResolverFactory(name string, _ json.RawMessage, handle framework.Handle) (framework.BBRPlugin, error) {
+func ModelProviderResolverFactory(name string, _ json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
 	plugin, err := NewModelProviderResolver(handle.ReconcilerBuilder, handle.Client())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create plugin '%s' - %w", ModelProviderResolverPluginType, err)
@@ -100,16 +105,6 @@ func NewModelProviderResolver(reconcilerBuilder func() *builder.Builder, k8sClie
 		return nil, fmt.Errorf("failed to register ExternalModel reconciler for plugin '%s' - %w", ModelProviderResolverPluginType, err)
 	}
 
-	// Legacy: watch maas.opendatahub.io ExternalModels and migrate to new CRs
-	legacyObj := &unstructured.Unstructured{}
-	legacyObj.SetGroupVersionKind(legacymigration.LegacyExternalModelGVK)
-	if err := reconcilerBuilder().
-		For(legacyObj).
-		Named("legacy-migration").
-		Complete(&legacymigration.Reconciler{Client: k8sClient}); err != nil {
-		return nil, fmt.Errorf("failed to register legacy migration reconciler for plugin '%s' - %w", ModelProviderResolverPluginType, err)
-	}
-
 	return &ModelProviderResolverPlugin{
 		typedName: plugin.TypedName{Type: ModelProviderResolverPluginType, Name: ModelProviderResolverPluginType},
 		store:     store,
@@ -136,7 +131,7 @@ func (p *ModelProviderResolverPlugin) WithName(name string) *ModelProviderResolv
 // ProcessRequest reads the model name from the request body, resolves the provider
 // from the store (populated by ExternalModel reconciler), and writes model, provider
 // and credential reference info to CycleState.
-func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleState *framework.CycleState, request *framework.InferenceRequest) error {
+func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleState *plugin.CycleState, request *requesthandling.InferenceRequest) error {
 	logger := log.FromContext(ctx).V(logutil.DEFAULT)
 
 	model, ok := request.Body["model"].(string)
@@ -145,79 +140,107 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 	}
 
 	log.FromContext(ctx).V(logutil.VERBOSE).Info("received incoming request", "path", request.Headers[":path"])
-	relativePath := sanitizePath(request.Headers[":path"])
 
-	segments := strings.Split(relativePath, "/")
-	if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
-		log.FromContext(ctx).V(logutil.VERBOSE).Info("wasn't able to parse namespaced name from path", "path", relativePath)
+	// Resolve by model name: prefer X-Gateway-Model-Name header (set by body-field-to-header),
+	// fall back to request body model field. This supports both single-URL and per-model-URL patterns.
+	modelName := request.Headers["x-gateway-model-name"]
+	if modelName == "" {
+		modelName = model
+	}
+
+	modelInfo, found := p.store.getModelByName(modelName)
+	if !found {
+		// LLMISvc BBR: client sent publisher ID (publishers/{ns}/models/{name}) in body,
+		// as returned by KServe GET /v1/models. X-Gateway-Model-Name header already has
+		// the publisher ID (set by body-field-to-header) — do not modify it, KServe routes on it.
+		// Rewrite body model field so vLLM receives just the model name.
+		// Write publisher ID to CycleState so ipp-post (metering, api-translation) can use it.
+		if strings.HasPrefix(modelName, "publishers/") {
+			if parts := strings.SplitN(modelName, "/models/", 2); len(parts) == 2 && parts[1] != "" {
+				request.SetBodyField("model", parts[1])
+				cycleState.Write(state.ModelKey, modelName)
+				logger.Info("LLMISvc BBR: rewrote body model field",
+					"original", modelName, "rewritten", parts[1])
+			}
+		}
 		return nil
 	}
 
-	modelKey := types.NamespacedName{Namespace: segments[0], Name: segments[1]}
-	log.FromContext(ctx).V(logutil.VERBOSE).Info("exported namespaced name from path", "key", modelKey)
+	logger.Info("resolved model by name", "modelName", modelName)
 
-	modelInfo, found := p.store.getModel(modelKey)
-	if !found {
-		return nil // not an external model — pass through for internal models
-	}
-
+	relativePath := sanitizePath(request.Headers[":path"])
 	inputFormat := detectInputAPIFormat(relativePath)
 	if inputFormat == "" {
-		logger.Error(nil, "unsupported API path for external model", "model", modelKey.String(), "path", relativePath)
-		return errcommon.Error{Code: errcommon.BadRequest, Msg: fmt.Sprintf("unsupported API path: %s", relativePath)}
+		logger.Error(nil, "unsupported API path for external model", "model", modelName, "path", relativePath)
+		return errcommon.Error{Code: errcommon.BadRequest, Msg: "unsupported API endpoint"}
 	}
 
 	ref := selectByWeight(modelInfo.refs)
+	if ref == nil {
+		return errcommon.Error{Code: errcommon.BadRequest, Msg: "all providers for model " + modelName + " are disabled (weight 0)"}
+	}
 
-	if ref.targetModel != model {
-		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", ref.targetModel)
-		return errcommon.Error{Code: errcommon.NotFound, Msg: fmt.Sprintf("model in request body '%s' doesn't match ExternalModel", model)}
+	// Drive Envoy routing to the selected provider's backend.
+	request.SetHeader(SelectedProviderHeader, ref.providerName)
+	request.SetHeader("Host", ref.endpoint)
+
+	if model != ref.targetModel {
+		request.SetBodyField("model", ref.targetModel)
 	}
 
 	cycleState.Write(state.ProviderKey, ref.provider)
 	cycleState.Write(state.ModelKey, ref.targetModel)
 	cycleState.Write(state.APIFormatKey, ref.apiFormat)
+	cycleState.Write(state.AuthTypeKey, ref.auth)
+	cycleState.Write(state.EndpointKey, ref.endpoint)
+	cycleState.Write(state.PathKey, ref.path)
 	cycleState.Write(state.CredsRefName, ref.secretName)
 	cycleState.Write(state.CredsRefNamespace, ref.secretNamespace)
 	cycleState.Write(state.ModelConfigKey, ref.config)
 	cycleState.Write(state.InputAPIFormatKey, inputFormat)
 
-	logger.Info("external model resolved", "model", modelKey.String(), "provider", ref.provider, "inputFormat", inputFormat, "apiFormat", ref.apiFormat)
+	logger.Info("external model resolved", "model", modelName, "provider", ref.provider, "inputFormat", inputFormat, "apiFormat", ref.apiFormat)
 	return nil
 }
 
 // detectInputAPIFormat determines the client's API format from the request path suffix.
-func detectInputAPIFormat(path string) string {
+func detectInputAPIFormat(path string) apiformat.APIFormat {
 	switch {
-	case strings.HasSuffix(path, "/v1/chat/completions"):
-		return "openai-chat"
-	case strings.HasSuffix(path, "/v1/messages"):
-		return "messages"
-	case strings.HasSuffix(path, "/v1/responses"):
-		return "openai-responses"
+	case strings.HasSuffix(path, "/v1/chat/completions"), path == "v1/chat/completions":
+		return apiformat.OpenAIChatCompletions
+	case strings.HasSuffix(path, "/v1/messages"), path == "v1/messages":
+		return apiformat.Messages
+	case strings.HasSuffix(path, "/v1/responses"), path == "v1/responses":
+		return apiformat.OpenAIResponses
 	default:
 		return ""
 	}
 }
 
 // selectByWeight picks a provider ref using weighted random selection.
-// With a single ref, returns it directly (no randomness).
-func selectByWeight(refs []resolvedProviderRef) *resolvedProviderRef {
-	if len(refs) == 1 {
-		return &refs[0]
-	}
+// Refs with weight <= 0 are skipped (disabled). Returns nil when all
+// refs have zero weight (all disabled).
+func selectByWeight(refs []*resolvedProviderRef) *resolvedProviderRef {
 	totalWeight := 0
-	for i := range refs {
-		totalWeight += refs[i].weight
-	}
-	r := rand.IntN(totalWeight)
-	for i := range refs {
-		r -= refs[i].weight
-		if r < 0 {
-			return &refs[i]
+	for _, ref := range refs {
+		if ref.weight > 0 {
+			totalWeight += ref.weight
 		}
 	}
-	return &refs[len(refs)-1]
+	if totalWeight == 0 {
+		return nil
+	}
+	r := rand.IntN(totalWeight)
+	for _, ref := range refs {
+		if ref.weight <= 0 {
+			continue
+		}
+		r -= ref.weight
+		if r < 0 {
+			return ref
+		}
+	}
+	return refs[len(refs)-1]
 }
 
 func sanitizePath(relativeUrlPath string) string {

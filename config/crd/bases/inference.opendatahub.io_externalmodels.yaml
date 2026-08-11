@@ -25,8 +25,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ExternalModel defines a client-facing model name that maps to one or more
-          external providers. metadata.name is the model name clients use in requests.
+          ExternalModel defines a client-facing model that maps to one or more
+          external providers. The model name clients use in requests is determined
+          by spec.modelName (if set) or metadata.name (default).
         properties:
           apiVersion:
             description: |-
@@ -87,9 +88,11 @@ spec:
                         type:
                           description: |-
                             Type identifies the auth type for this provider.
-                            e.g. "simple" (header based), "sigv4", etc.
-                          maxLength: 63
-                          minLength: 1
+                            e.g. "apikey" (header based), "sigv4", etc.
+                          enum:
+                          - apikey
+                          - sigv4
+                          - oauth2
                           type: string
                       required:
                       - secretRef
@@ -102,6 +105,16 @@ spec:
                         Config holds model-specific configuration as key-value pairs.
                         Overrides the ExternalProvider config for this model-provider binding.
                       type: object
+                    path:
+                      description: |-
+                        Path sets the outgoing request `:path` pseudo-header for this model-provider binding.
+                        Must be a valid absolute path (e.g. "/v1/chat/completions" or
+                        "/maas-default-gateway/v1/chat/completions").
+                        Supports {key} placeholders resolved from the merged Config map.
+                      maxLength: 512
+                      minLength: 1
+                      pattern: ^/.*
+                      type: string
                     ref:
                       description: Ref identifies the ExternalProvider CR (must be
                         in the same namespace).
@@ -126,18 +139,29 @@ spec:
                       description: |-
                         Weight determines the relative traffic proportion for this provider binding.
                         Higher weight means more traffic. Used for weighted random selection across
-                        multiple provider refs. Defaults to 1 if not set.
+                        multiple provider refs. A weight of 0 disables the ref (no traffic routed
+                        to it). Defaults to 1 if not set.
                       maximum: 100
-                      minimum: 1
+                      minimum: 0
                       type: integer
                   required:
                   - apiFormat
+                  - path
                   - ref
                   - targetModel
                   type: object
                 maxItems: 64
                 minItems: 1
                 type: array
+              modelName:
+                description: |-
+                  ModelName is the client-facing model name used in inference request bodies.
+                  Clients send this value in the "model" field of chat completion requests.
+                  Defaults to metadata.name if not set. Use this field when the desired
+                  model name contains characters not allowed in Kubernetes resource names
+                  (dots, colons, slashes, uppercase).
+                maxLength: 253
+                type: string
             required:
             - externalProviderRefs
             type: object
@@ -202,6 +226,12 @@ spec:
                   - type
                   type: object
                 type: array
+              httpRouteName:
+                description: |-
+                  HTTPRouteName is the name of the HTTPRoute created by the controller
+                  for this ExternalModel. Consumers (e.g., maas-controller) can read this
+                  to attach policies without assuming naming conventions.
+                type: string
               phase:
                 description: |-
                   Phase represents the current reconciliation phase.

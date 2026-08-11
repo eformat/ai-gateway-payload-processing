@@ -26,9 +26,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
+	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-payload-processing/api/inference/v1alpha1"
+	ctrlcommon "github.com/opendatahub-io/ai-gateway-payload-processing/pkg/controller/common"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/auth"
 )
 
 const providerRequeueDelay = 5 * time.Second
@@ -51,20 +54,30 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if errors.IsNotFound(err) || !model.GetDeletionTimestamp().IsZero() {
-		r.store.deleteModel(req.NamespacedName)
+		// On deletion, use the CRD name as fallback since spec may be empty.
+		deleteName := model.Spec.ModelName
+		if deleteName == "" {
+			deleteName = req.Name
+		}
+		r.store.deleteModel(deleteName)
 		logger.Info("ExternalModel removed from store", "name", req.Name, "namespace", req.Namespace)
 		return ctrl.Result{}, nil
 	}
 
+	modelName := model.Spec.ModelName
+	if modelName == "" {
+		modelName = req.Name
+	}
+
 	// Resolve all refs whose providers are available in the store.
-	var resolved []resolvedProviderRef
-	for _, ref := range model.Spec.ExternalProviderRefs {
-		rr, found := r.resolveRef(req.Namespace, ref)
-		if !found {
-			logger.Info("ExternalProvider not yet available, skipping ref", "provider", ref.Ref.Name)
+	var resolved []*resolvedProviderRef
+	for i := range model.Spec.ExternalProviderRefs {
+		resolvedRef, err := r.resolveRef(req.Namespace, &model.Spec.ExternalProviderRefs[i])
+		if err != nil {
+			logger.Error(err, "failed to resolve ref, skipping", "provider", model.Spec.ExternalProviderRefs[i].Ref.Name)
 			continue
 		}
-		resolved = append(resolved, *rr)
+		resolved = append(resolved, resolvedRef)
 	}
 
 	if len(resolved) == 0 {
@@ -72,27 +85,28 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: providerRequeueDelay}, nil
 	}
 
-	r.store.addOrUpdateModel(req.NamespacedName, &externalModelInfo{refs: resolved})
-	logger.Info("updated model store", "resolvedRefs", len(resolved))
+	r.store.addOrUpdateModel(modelName, &externalModelInfo{modelName: modelName, refs: resolved})
+	logger.Info("updated model store", "modelName", modelName, "resolvedRefs", len(resolved))
 	return ctrl.Result{}, nil
 }
 
 // resolveRef resolves a single ExternalProviderRef to provider info.
-// Returns (nil, false) if the provider is not yet available in the store.
-func (r *externalModelReconciler) resolveRef(namespace string, ref inferencev1alpha1.ExternalProviderRef) (*resolvedProviderRef, bool) {
+func (r *externalModelReconciler) resolveRef(namespace string, ref *inferencev1alpha1.ExternalProviderRef) (*resolvedProviderRef, error) {
 	providerKey := types.NamespacedName{Namespace: namespace, Name: ref.Ref.Name}
 	providerInfo, found := r.store.getProvider(providerKey)
 	if !found {
-		return nil, false
+		return nil, fmt.Errorf("ExternalProvider %q not yet available in store", ref.Ref.Name)
 	}
 
 	config := mergeConfig(providerInfo.config, ref.Config)
 
 	secretName := providerInfo.secretName
 	secretNamespace := providerInfo.secretNamespace
+	authType := providerInfo.auth
 	if ref.Auth != nil {
 		secretName = ref.Auth.SecretRef.Name
 		secretNamespace = namespace
+		authType = auth.Auth(ref.Auth.Type)
 	}
 
 	weight := 1
@@ -100,15 +114,24 @@ func (r *externalModelReconciler) resolveRef(namespace string, ref inferencev1al
 		weight = *ref.Weight
 	}
 
+	path, err := ctrlcommon.ResolvePath(ref.Path, config, ref.TargetModel)
+	if err != nil {
+		return nil, fmt.Errorf("path %q: %w", ref.Path, err)
+	}
+
 	return &resolvedProviderRef{
 		provider:        providerInfo.provider,
+		providerName:    ref.Ref.Name,
 		targetModel:     ref.TargetModel,
-		apiFormat:       ref.APIFormat,
+		apiFormat:       apiformat.APIFormat(ref.APIFormat),
+		auth:            authType,
+		endpoint:        providerInfo.endpoint,
+		path:            path,
 		secretName:      secretName,
 		secretNamespace: secretNamespace,
 		config:          config,
 		weight:          weight,
-	}, true
+	}, nil
 }
 
 // mergeConfig copies provider config and applies model overrides.
@@ -122,4 +145,3 @@ func mergeConfig(providerConfig, modelConfig map[string]string) map[string]strin
 	}
 	return merged
 }
-

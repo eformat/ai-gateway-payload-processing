@@ -16,8 +16,16 @@ limitations under the License.
 
 package auth
 
-// AuthHeadersGenerator generates auth headers from credential fields.
-// Each implementation defines which fields it requires from the credentials map.
-type AuthHeadersGenerator interface {
-	GenerateAuthHeaders(credentialsData map[string]string) (map[string]string, error)
-}
+type Auth string
+
+const (
+	APIKey Auth = "apikey"
+	SigV4  Auth = "sigv4"
+	OAuth2 Auth = "oauth2" // not used yet
+	None   Auth = "none"
+)
+
+const (
+	APIKeyAuthHeaderName  = "authHeaderName"
+	APIKeyAuthValuePrefix = "authValuePrefix"
+)

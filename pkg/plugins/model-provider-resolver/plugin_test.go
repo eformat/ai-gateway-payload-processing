@@ -21,9 +21,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/framework"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/auth"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/provider"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/state"
 )
@@ -35,13 +37,15 @@ func TestProcessRequest_ModelResolved(t *testing.T) {
 		extName     = "claude-sonnet"
 		targetModel = "claude-sonnet-1234"
 		credName    = "anthropic-key"
+		endpoint    = "api.anthropic.com"
 	)
-	store.addOrUpdateModel(
-		types.NamespacedName{Namespace: extNS, Name: extName},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+	store.addOrUpdateModel(extName,
+		&externalModelInfo{modelName: extName, refs: []*resolvedProviderRef{{
 			provider:        provider.Anthropic,
 			targetModel:     targetModel,
-			apiFormat:       "messages",
+			apiFormat:       apiformat.Messages,
+			auth:            auth.APIKey,
+			endpoint:        endpoint,
 			secretName:      credName,
 			secretNamespace: extNS,
 			config:          map[string]string{},
@@ -49,90 +53,159 @@ func TestProcessRequest_ModelResolved(t *testing.T) {
 		}}},
 	)
 
-	plugin := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/" + extNS + "/" + extName + "/v1/chat/completions"
-	req.Body["model"] = targetModel
+	req.Body["model"] = extName
 
-	err := plugin.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	actualModel, err := framework.ReadCycleStateKey[string](cs, state.ModelKey)
+	actualModel, err := plugin.ReadCycleStateKey[string](cs, state.ModelKey)
 	require.NoError(t, err)
 	require.Equal(t, targetModel, actualModel)
 
-	actualProvider, err := framework.ReadCycleStateKey[string](cs, state.ProviderKey)
+	actualProvider, err := plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
 	require.NoError(t, err)
 	require.Equal(t, provider.Anthropic, actualProvider)
 
-	actualCredsName, err := framework.ReadCycleStateKey[string](cs, state.CredsRefName)
+	actualCredsName, err := plugin.ReadCycleStateKey[string](cs, state.CredsRefName)
 	require.NoError(t, err)
 	require.Equal(t, credName, actualCredsName)
 
-	actualCredsNamespace, err := framework.ReadCycleStateKey[string](cs, state.CredsRefNamespace)
+	actualCredsNamespace, err := plugin.ReadCycleStateKey[string](cs, state.CredsRefNamespace)
 	require.NoError(t, err)
 	require.Equal(t, extNS, actualCredsNamespace)
 
-	actualAPIFormat, err := framework.ReadCycleStateKey[string](cs, state.APIFormatKey)
+	actualAPIFormat, err := plugin.ReadCycleStateKey[apiformat.APIFormat](cs, state.APIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", actualAPIFormat)
+	require.Equal(t, apiformat.Messages, actualAPIFormat)
+
+	actualAuthType, err := plugin.ReadCycleStateKey[auth.Auth](cs, state.AuthTypeKey)
+	require.NoError(t, err)
+	require.Equal(t, auth.APIKey, actualAuthType)
+
+	actualEndpoint, err := plugin.ReadCycleStateKey[string](cs, state.EndpointKey)
+	require.NoError(t, err)
+	require.Equal(t, endpoint, actualEndpoint)
+}
+
+func TestProcessRequest_PathWrittenToCycleState(t *testing.T) {
+	store := newInfoStore()
+	const (
+		extNS       = "llm"
+		extName     = "remote-llama"
+		targetModel = "llama-4-scout"
+		credName    = "cluster-b-key"
+		endpoint    = "maas.cluster-b.example.com"
+		path        = "/maas-default-gateway/v1/chat/completions"
+	)
+	store.addOrUpdateModel(extName,
+		&externalModelInfo{modelName: extName, refs: []*resolvedProviderRef{{
+			provider:        provider.OpenAI,
+			targetModel:     targetModel,
+			apiFormat:       apiformat.OpenAIChatCompletions,
+			auth:            auth.APIKey,
+			endpoint:        endpoint,
+			path:            path,
+			secretName:      credName,
+			secretNamespace: extNS,
+			config:          map[string]string{},
+			weight:          1,
+		}}},
+	)
+
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
+	req.Headers[":path"] = "/" + extNS + "/" + extName + "/v1/chat/completions"
+	req.Body["model"] = extName
+
+	err := instance.ProcessRequest(context.Background(), cs, req)
+	require.NoError(t, err)
+
+	actualPath, err := plugin.ReadCycleStateKey[string](cs, state.PathKey)
+	require.NoError(t, err)
+	require.Equal(t, path, actualPath)
+}
+
+func TestProcessRequest_UnknownModelPassesThrough(t *testing.T) {
+	store := newInfoStore()
+	store.addOrUpdateModel("gpt4",
+		&externalModelInfo{modelName: "gpt4", refs: []*resolvedProviderRef{{
+			provider: provider.OpenAI, targetModel: "gpt-4o",
+			apiFormat: apiformat.OpenAIChatCompletions,
+			secretName: "k", secretNamespace: "llm",
+			config: map[string]string{}, weight: 1,
+		}}},
+	)
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
+	req.Headers[":path"] = "/llm/gpt4/v1/chat/completions"
+	req.Body["model"] = "unknown-model"
+
+	err := instance.ProcessRequest(context.Background(), cs, req)
+	require.NoError(t, err, "unknown model name should pass through for internal models")
+
+	_, provErr := plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
+	require.Error(t, provErr, "provider should not be set for unknown models")
 }
 
 func TestProcessRequest_ModelNotFound(t *testing.T) {
 	store := newInfoStore()
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/model-ns/model-name/v1/chat/completions"
 	req.Body["model"] = "unknown-model"
 
-	err := p.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	_, err = framework.ReadCycleStateKey[string](cs, state.ProviderKey)
+	_, err = plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
 	require.Error(t, err)
 }
 
 func TestProcessRequest_NoModel(t *testing.T) {
 	store := newInfoStore()
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
 
-	err := p.ProcessRequest(context.Background(), cs, framework.NewInferenceRequest())
+	err := instance.ProcessRequest(context.Background(), cs, requesthandling.NewInferenceRequest())
 	require.NoError(t, err)
 
-	_, err = framework.ReadCycleStateKey[string](cs, state.ProviderKey)
+	_, err = plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
 	require.Error(t, err)
-	_, err = framework.ReadCycleStateKey[string](cs, state.ModelKey)
+	_, err = plugin.ReadCycleStateKey[string](cs, state.ModelKey)
 	require.Error(t, err)
 }
 
 func TestProcessRequest_BadPath(t *testing.T) {
 	store := newInfoStore()
-	store.addOrUpdateModel(
-		types.NamespacedName{Namespace: "llm", Name: "ext"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+	store.addOrUpdateModel("ext",
+		&externalModelInfo{modelName: "ext", refs: []*resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-4o",
 			secretName: "k", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
 		}}},
 	)
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/incomplete"
 	req.Body["model"] = "gpt-4o"
 
-	err := p.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	_, err = framework.ReadCycleStateKey[string](cs, state.ProviderKey)
+	_, err = plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
 	require.Error(t, err)
 }
 
 func TestSelectByWeight_SingleRef(t *testing.T) {
-	refs := []resolvedProviderRef{
+	refs := []*resolvedProviderRef{
 		{provider: "openai", weight: 1},
 	}
 	selected := selectByWeight(refs)
@@ -140,7 +213,7 @@ func TestSelectByWeight_SingleRef(t *testing.T) {
 }
 
 func TestSelectByWeight_Distribution(t *testing.T) {
-	refs := []resolvedProviderRef{
+	refs := []*resolvedProviderRef{
 		{provider: "openai", weight: 80},
 		{provider: "anthropic", weight: 20},
 	}
@@ -156,7 +229,7 @@ func TestSelectByWeight_Distribution(t *testing.T) {
 }
 
 func TestSelectByWeight_EqualWeights(t *testing.T) {
-	refs := []resolvedProviderRef{
+	refs := []*resolvedProviderRef{
 		{provider: "a", weight: 1},
 		{provider: "b", weight: 1},
 		{provider: "c", weight: 1},
@@ -175,88 +248,130 @@ func TestSelectByWeight_EqualWeights(t *testing.T) {
 
 func TestProcessRequest_AnthropicMessages(t *testing.T) {
 	store := newInfoStore()
-	store.addOrUpdateModel(
-		types.NamespacedName{Namespace: "llm", Name: "claude"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+	store.addOrUpdateModel("claude",
+		&externalModelInfo{modelName: "claude", refs: []*resolvedProviderRef{{
 			provider: provider.Anthropic, targetModel: "claude-opus-4-6",
 			apiFormat: "messages", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
 		}}},
 	)
 
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/claude/v1/messages"
-	req.Body["model"] = "claude-opus-4-6"
+	req.Body["model"] = "claude"
 
-	err := p.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	inputFmt, err := framework.ReadCycleStateKey[string](cs, state.InputAPIFormatKey)
+	inputFmt, err := plugin.ReadCycleStateKey[apiformat.APIFormat](cs, state.InputAPIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", inputFmt)
+	require.Equal(t, apiformat.Messages, inputFmt)
 
-	apiFormat, err := framework.ReadCycleStateKey[string](cs, state.APIFormatKey)
+	apiFormat, err := plugin.ReadCycleStateKey[apiformat.APIFormat](cs, state.APIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", apiFormat)
+	require.Equal(t, apiformat.Messages, apiFormat)
 }
 
 func TestProcessRequest_OpenAIResponses(t *testing.T) {
 	store := newInfoStore()
-	store.addOrUpdateModel(
-		types.NamespacedName{Namespace: "llm", Name: "gpt"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+	store.addOrUpdateModel("gpt",
+		&externalModelInfo{modelName: "gpt", refs: []*resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-5.5",
 			apiFormat: "openai-chat", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
 		}}},
 	)
 
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/gpt/v1/responses"
-	req.Body["model"] = "gpt-5.5"
+	req.Body["model"] = "gpt"
 
-	err := p.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	inputFmt, err := framework.ReadCycleStateKey[string](cs, state.InputAPIFormatKey)
+	inputFmt, err := plugin.ReadCycleStateKey[apiformat.APIFormat](cs, state.InputAPIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "openai-responses", inputFmt)
+	require.Equal(t, apiformat.OpenAIResponses, inputFmt)
 }
 
 func TestProcessRequest_UnsupportedPath(t *testing.T) {
 	store := newInfoStore()
-	store.addOrUpdateModel(
-		types.NamespacedName{Namespace: "llm", Name: "model"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+	store.addOrUpdateModel("model",
+		&externalModelInfo{modelName: "model", refs: []*resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-4o",
 			apiFormat: "openai-chat", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
 		}}},
 	)
 
-	p := &ModelProviderResolverPlugin{store: store}
-	cs := framework.NewCycleState()
-	req := framework.NewInferenceRequest()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/model/v1/unknown"
-	req.Body["model"] = "gpt-4o"
+	req.Body["model"] = "model"
 
-	err := p.ProcessRequest(context.Background(), cs, req)
+	err := instance.ProcessRequest(context.Background(), cs, req)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "unsupported API path")
+	require.Contains(t, err.Error(), "unsupported API endpoint")
+}
+
+func TestProcessRequest_LLMISvcPublisherIDBodyRewrite(t *testing.T) {
+	const publisherID = "publishers/llm/models/facebook/opt-125m"
+	const modelName = "facebook/opt-125m"
+
+	store := newInfoStore()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
+	req.Headers[":path"] = "/v1/chat/completions"
+	req.Headers["x-gateway-model-name"] = publisherID
+	req.Body["model"] = publisherID
+
+	err := instance.ProcessRequest(context.Background(), cs, req)
+	require.NoError(t, err)
+
+	require.Equal(t, modelName, req.Body["model"],
+		"body model field should be rewritten to just the model name for vLLM")
+	require.Equal(t, publisherID, req.Headers["x-gateway-model-name"],
+		"X-Gateway-Model-Name header must not be modified — KServe routes on it")
+
+	resolvedModel, err := plugin.ReadCycleStateKey[string](cs, state.ModelKey)
+	require.NoError(t, err)
+	require.Equal(t, publisherID, resolvedModel,
+		"publisher ID should be written to CycleState for ipp-post metering and response restoration")
+
+	_, provErr := plugin.ReadCycleStateKey[string](cs, state.ProviderKey)
+	require.Error(t, provErr, "no provider should be set for LLMISvc models")
+}
+
+func TestProcessRequest_LLMISvcPublisherIDPassThroughWhenMalformed(t *testing.T) {
+	store := newInfoStore()
+	instance := &ModelProviderResolverPlugin{store: store}
+	cs := plugin.NewCycleState()
+	req := requesthandling.NewInferenceRequest()
+	req.Headers[":path"] = "/v1/chat/completions"
+	// No "/models/" segment — should pass through without rewriting
+	req.Headers["x-gateway-model-name"] = "publishers/llm/nope"
+	req.Body["model"] = "publishers/llm/nope"
+
+	err := instance.ProcessRequest(context.Background(), cs, req)
+	require.NoError(t, err, "malformed publisher ID should pass through without error")
+	require.Equal(t, "publishers/llm/nope", req.Body["model"],
+		"malformed publisher ID body should not be rewritten")
 }
 
 func TestDetectInputAPIFormat(t *testing.T) {
 	tests := []struct {
 		path     string
-		expected string
+		expected apiformat.APIFormat
 	}{
-		{"llm/model/v1/chat/completions", "openai-chat"},
-		{"llm/model/v1/messages", "messages"},
-		{"llm/model/v1/responses", "openai-responses"},
+		{"llm/model/v1/chat/completions", apiformat.OpenAIChatCompletions},
+		{"llm/model/v1/messages", apiformat.Messages},
+		{"llm/model/v1/responses", apiformat.OpenAIResponses},
 		{"llm/model/v1/unknown", ""},
 		{"llm/model/v1/models", ""},
 	}
