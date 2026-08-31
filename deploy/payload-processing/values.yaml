@@ -44,6 +44,10 @@ upstreamIpp:
 
   provider:
     name: istio
+    istio:
+      envoyFilter:
+        operation: INSERT_AFTER
+        anchorSubFilter: "envoy.filters.http.wasm"
 
   inferenceGateway:
     name: maas-default-gateway

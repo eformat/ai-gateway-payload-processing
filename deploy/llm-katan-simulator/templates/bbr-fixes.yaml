@@ -1,0 +1,76 @@
+{{- /*
+  Fix 1: NetworkPolicy — allow the MAAS gateway pods to reach the payload-processing
+  ext-proc (BBR) service on port 9004.  The DataScienceCluster operator manages the
+  existing "payload-processing" NetworkPolicy and only allows data-science-gateway
+  pods; we add a separate policy so reconciliation loops don't undo our change.
+
+  Fix 2: EnvoyFilter — the MAAS controller hard-codes the BBR anchor as
+  "extensions.istio.io/wasmplugin/…" (the Istio WasmPlugin naming convention).
+  In this cluster Kuadrant injects its WASM shim via a raw EnvoyFilter, so the
+  filter is named "envoy.filters.http.wasm" instead.  We create a second
+  EnvoyFilter that inserts BBR in the correct position (after the WASM auth
+  filter and before the router).  Because the MAAS controller's own EnvoyFilter
+  can't find its anchor it inserts nothing, so only our policy is active.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payload-processing-maas-gateway-allow
+  namespace: {{ .Values.gateway.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: payload-processing
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.gateway.namespace }}
+      podSelector:
+        matchLabels:
+          gateway.networking.k8s.io/gateway-name: {{ .Values.gateway.name }}
+    ports:
+    - port: 9004
+      protocol: TCP
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: payload-processing-bbr-fix
+  namespace: {{ .Values.gateway.namespace }}
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ .Values.gateway.name }}
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+            subFilter:
+              name: "envoy.filters.http.wasm"
+    patch:
+      operation: INSERT_AFTER
+      value:
+        name: envoy.filters.http.ext_proc.bbr
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+          failure_mode_allow: false
+          allow_mode_override: true
+          processing_mode:
+            request_header_mode: "SEND"
+            response_header_mode: "SEND"
+            request_body_mode: "FULL_DUPLEX_STREAMED"
+            response_body_mode: "FULL_DUPLEX_STREAMED"
+            request_trailer_mode: "SEND"
+            response_trailer_mode: "SEND"
+          grpc_service:
+            envoy_grpc:
+              cluster_name: outbound|9004||payload-processing.{{ .Values.gateway.namespace }}.svc.cluster.local
